@@ -118,25 +118,10 @@ async def get_unsubscribed_channels(bot: Bot, user_id: int) -> List[Dict[str, st
     return unsubscribed
 
 
-def get_force_sub_message(user_first_name: str, channels: List[Dict[str, str]]) -> str:
-    """Generate aesthetic force subscription required message."""
-    safe_name = html.escape(user_first_name or "there")
-    
-    text = (
-        f"👋 <b>Hello {safe_name}!</b>\n\n"
-        f"🔒 <b>Subscription Required</b>\n"
-        f"To use this bot and access all features, you must join our official channel"
+def get_force_sub_message(user_first_name: str = "", channels: Optional[List[Dict[str, str]]] = None) -> str:
+    """Generate force subscription required message matching design."""
+    return (
+        "👋 <b>Welcome!</b>\n\n"
+        "⚠️ <b>To use this bot, you must join our official channel(s) first.</b>\n\n"
+        "Please click the button(s) below to join all channels, then tap '🔄 I Have Joined (Verify)' to continue!"
     )
-    if len(channels) > 1:
-        text += "s:\n\n"
-    else:
-        text += ":\n\n"
-
-    for idx, ch in enumerate(channels, 1):
-        safe_title = html.escape(ch.get("title") or f"Channel {idx}")
-        text += f"• 📢 <b>{safe_title}</b>\n"
-
-    text += (
-        f"\n👉 <i>Click the channel link(s) below to join, then tap <b>'Verify / I Joined'</b> to continue.</i>"
-    )
-    return text

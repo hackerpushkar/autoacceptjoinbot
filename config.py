@@ -33,8 +33,15 @@ if raw_admins:
         if clean_item.isdigit() or (clean_item.startswith("-") and clean_item[1:].isdigit()):
             ADMIN_IDS.append(int(clean_item))
 
-# Database configuration
+# Database configuration (MongoDB with automatic SQLite fallback)
+MONGO_URI: str = (
+    os.getenv("MONGO_URI", "")
+    or os.getenv("MONGODB_URI", "")
+    or os.getenv("MONGO_URL", "")
+).strip()
+DATABASE_NAME: str = os.getenv("DATABASE_NAME", "telegram_auto_accept_bot").strip()
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "bot_database.sqlite3").strip()
+IS_MONGO: bool = bool(MONGO_URI)
 
 # Force Subscribe Channels
 # Comma-separated list of channel usernames or chat IDs (e.g. "@mychannel, -100123456789")
@@ -49,7 +56,7 @@ if raw_force_sub:
 # Default Welcome message
 DEFAULT_WELCOME_MESSAGE: str = os.getenv(
     "DEFAULT_WELCOME_MESSAGE",
-    "👋 Hello {name}!\n\n🎉 Your request to join *{chat_title}* has been **approved**.\n\nWelcome aboard! Enjoy your stay. ✨"
+    "👋 Hello {name}!\n\n🎉 Your request to join <b>{chat_title}</b> has been <b>approved</b>.\n\nWelcome aboard! Enjoy your stay. ✨"
 ).replace("\\n", "\n")
 
 

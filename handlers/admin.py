@@ -18,6 +18,10 @@ from database.db import (
     toggle_chat_auto_accept,
     toggle_chat_welcome,
     set_chat_custom_welcome,
+    toggle_chat_force_sub,
+    set_chat_force_sub_channels,
+    toggle_chat_send_only,
+    set_chat_send_only_delay,
     get_all_user_ids
 )
 from keyboards.inline import (
@@ -25,6 +29,9 @@ from keyboards.inline import (
     get_channels_keyboard,
     get_chat_settings_keyboard,
     get_chat_welcome_menu_keyboard,
+    get_chat_forcesub_menu_keyboard,
+    get_chat_sendonly_menu_keyboard,
+    format_delay_time,
     get_approve_pending_confirm_keyboard,
     get_broadcast_confirm_keyboard,
     get_back_to_start_keyboard,
@@ -40,6 +47,7 @@ from services.backlog_cleaner import (
 # Conversation States
 WAITING_WELCOME_MSG = 1
 WAITING_BROADCAST_MSG = 2
+WAITING_FORCESUB_CHANNELS = 3
 
 
 # ==========================================
@@ -132,16 +140,26 @@ def build_chat_settings_view(chat_data: dict) -> tuple[str, InlineKeyboardMarkup
     title = chat_data.get("title") or f"Chat {chat_id}"
     auto_accept = chat_data.get("auto_accept", 1) == 1
     welcome_enabled = chat_data.get("welcome_enabled", 1) == 1
+    force_sub_enabled = chat_data.get("force_sub_enabled", 0) == 1
+    force_sub_channels = chat_data.get("force_sub_channels")
+
     auto_status = "🟢 Enabled" if auto_accept else "🔴 Disabled"
     welcome_status = "🟢 Enabled" if welcome_enabled else "🔴 Disabled"
+
+    if force_sub_enabled and force_sub_channels:
+        channels_count = len([c for c in force_sub_channels.split(",") if c.strip()])
+        force_status = f"🟢 Enabled ({channels_count} channel{'s' if channels_count != 1 else ''})"
+    else:
+        force_status = "🔴 Disabled"
 
     text = (
         f"⚙️ <b>Settings for:</b> {html.escape(title)}\n"
         f"🆔 <b>Chat ID:</b> <code>{chat_id}</code>\n"
         f"🏷️ <b>Type:</b> {chat_data.get('chat_type', 'channel').capitalize()}\n\n"
         f"• <b>Auto-Accept Requests:</b> {auto_status}\n"
-        f"• <b>Welcome Direct Message:</b> {welcome_status}\n\n"
-        f"👉 <i>Click <b>'Manage Welcome Message'</b> below to customize text, attach images, or add buttons.</i>"
+        f"• <b>Welcome Direct Message:</b> {welcome_status}\n"
+        f"• <b>Force Join Channels:</b> {force_status}\n\n"
+        f"👉 <i>Click <b>'Manage Welcome Message'</b> or <b>'Setup Force Join Another Channel'</b> below to customize settings.</i>"
     )
     keyboard = get_chat_settings_keyboard(
         chat_id=chat_id,
@@ -173,6 +191,74 @@ def build_chat_welcome_menu_view(chat_data: dict) -> tuple[str, InlineKeyboardMa
     keyboard = get_chat_welcome_menu_keyboard(
         chat_id=chat_id,
         welcome_enabled=welcome_enabled
+    )
+    return text, keyboard
+
+
+def build_chat_forcesub_menu_view(chat_data: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Generate text and keyboard for dedicated force join manager."""
+    chat_id = chat_data["chat_id"]
+    title = chat_data.get("title") or f"Chat {chat_id}"
+    force_sub_enabled = chat_data.get("force_sub_enabled", 0) == 1
+    force_sub_channels = chat_data.get("force_sub_channels")
+    send_only_enabled = chat_data.get("send_only_enabled", 0) == 1
+    send_only_delay = chat_data.get("send_only_delay", 86400)
+
+    status_str = "🟢 Enabled" if (force_sub_enabled and force_sub_channels) else "🔴 Disabled"
+    send_only_str = f"🟢 Active ({format_delay_time(send_only_delay)} delay)" if send_only_enabled else "🔴 Disabled"
+
+    if force_sub_channels:
+        channels_list = "\n".join([f"• <code>{html.escape(c.strip())}</code>" for c in force_sub_channels.split(",") if c.strip()])
+    else:
+        channels_list = "<i>(No channels configured yet)</i>"
+
+    text = (
+        f"🔒 <b>Setup Force Join Channels</b>\n\n"
+        f"📢 <b>Target Channel:</b> {html.escape(title)}\n"
+        f"🆔 <b>Chat ID:</b> <code>{chat_id}</code>\n\n"
+        f"• <b>Force Join Status:</b> {status_str}\n"
+        f"• <b>Send Only (Auto-Accept Timer):</b> {send_only_str}\n"
+        f"• <b>Required Channels to Join:</b>\n{channels_list}\n\n"
+        f"💡 <b>How it works:</b>\n"
+        f"When users request to join <b>{html.escape(title)}</b>, the bot will automatically verify if they are members of the required channels above.\n\n"
+        f"If they have not joined, the bot sends them a direct message with join buttons and will only approve their request once they join all required channels!\n\n"
+        f"👇 <i>Choose an action below:</i>"
+    )
+    keyboard = get_chat_forcesub_menu_keyboard(
+        chat_id=chat_id,
+        force_sub_enabled=force_sub_enabled,
+        has_channels=bool(force_sub_channels),
+        send_only_enabled=send_only_enabled,
+        send_only_delay=send_only_delay
+    )
+    return text, keyboard
+
+
+def build_chat_sendonly_menu_view(chat_data: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Generate text and keyboard for Send Only timer configuration."""
+    chat_id = chat_data["chat_id"]
+    title = chat_data.get("title") or f"Chat {chat_id}"
+    send_only_enabled = chat_data.get("send_only_enabled", 0) == 1
+    send_only_delay = chat_data.get("send_only_delay", 86400)
+
+    status_str = f"🟢 Active ({format_delay_time(send_only_delay)} auto-accept timer)" if send_only_enabled else "🔴 Disabled"
+
+    text = (
+        f"⏱️ <b>Send Only Mode (Delayed Auto-Accept)</b>\n\n"
+        f"📢 <b>Target Channel:</b> {html.escape(title)}\n"
+        f"🆔 <b>Chat ID:</b> <code>{chat_id}</code>\n\n"
+        f"• <b>Send Only Status:</b> {status_str}\n"
+        f"• <b>Current Timer Delay:</b> <code>{format_delay_time(send_only_delay)}</code>\n\n"
+        f"💡 <b>How it works:</b>\n"
+        f"1. When a user requests to join, the bot sends them the <b>Force Join DM</b>.\n"
+        f"2. If the user clicks <b>'🔄 Verify & Join'</b> early, they are approved immediately.\n"
+        f"3. If they do NOT join, the bot will <b>automatically approve them after the timer delay</b> ({format_delay_time(send_only_delay)})!\n\n"
+        f"👇 <i>Select a delay preset or toggle below:</i>"
+    )
+    keyboard = get_chat_sendonly_menu_keyboard(
+        chat_id=chat_id,
+        send_only_enabled=send_only_enabled,
+        current_delay=send_only_delay
     )
     return text, keyboard
 
@@ -332,6 +418,80 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         if chat_data:
             text, keyboard = build_chat_welcome_menu_view(chat_data)
             await query.answer("Welcome message & media reset to default! ✅", show_alert=True)
+            try:
+                await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except telegram.error.BadRequest:
+                pass
+
+    elif data.startswith("chat_forcesub_menu:"):
+        chat_id = int(data.split(":")[1])
+        chat_data = await get_chat(chat_id)
+        if chat_data:
+            text, keyboard = build_chat_forcesub_menu_view(chat_data)
+            await query.answer()
+            try:
+                await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except telegram.error.BadRequest:
+                pass
+
+    elif data.startswith("chat_toggle_forcesub:"):
+        chat_id = int(data.split(":")[1])
+        new_state = await toggle_chat_force_sub(chat_id)
+        chat_data = await get_chat(chat_id)
+        if chat_data:
+            text, keyboard = build_chat_forcesub_menu_view(chat_data)
+            status_text = "Force Join: ON ✅" if new_state else "Force Join: OFF ❌"
+            await query.answer(status_text)
+            try:
+                await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except telegram.error.BadRequest:
+                pass
+
+    elif data.startswith("chat_reset_forcesub:"):
+        chat_id = int(data.split(":")[1])
+        await set_chat_force_sub_channels(chat_id, None)
+        chat_data = await get_chat(chat_id)
+        if chat_data:
+            text, keyboard = build_chat_forcesub_menu_view(chat_data)
+            await query.answer("Force join channels cleared! 🗑️", show_alert=True)
+            try:
+                await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except telegram.error.BadRequest:
+                pass
+
+    elif data.startswith("chat_sendonly_menu:"):
+        chat_id = int(data.split(":")[1])
+        chat_data = await get_chat(chat_id)
+        if chat_data:
+            text, keyboard = build_chat_sendonly_menu_view(chat_data)
+            await query.answer()
+            try:
+                await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except telegram.error.BadRequest:
+                pass
+
+    elif data.startswith("chat_toggle_sendonly:"):
+        chat_id = int(data.split(":")[1])
+        new_state = await toggle_chat_send_only(chat_id)
+        chat_data = await get_chat(chat_id)
+        if chat_data:
+            text, keyboard = build_chat_sendonly_menu_view(chat_data)
+            status_text = "Send Only: ACTIVE 🟢" if new_state else "Send Only: DISABLED 🔴"
+            await query.answer(status_text)
+            try:
+                await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+            except telegram.error.BadRequest:
+                pass
+
+    elif data.startswith("chat_set_sendonly_delay:"):
+        parts = data.split(":")
+        chat_id = int(parts[1])
+        delay_sec = int(parts[2])
+        await set_chat_send_only_delay(chat_id, delay_sec)
+        chat_data = await get_chat(chat_id)
+        if chat_data:
+            text, keyboard = build_chat_sendonly_menu_view(chat_data)
+            await query.answer(f"Timer set to {format_delay_time(delay_sec)}! ⏱️")
             try:
                 await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
             except telegram.error.BadRequest:
@@ -524,6 +684,56 @@ async def save_custom_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"New members joining this chat will now automatically receive this custom welcome DM with your configured buttons and media."
     )
 
+    await msg.reply_text(
+        success_text,
+        parse_mode="HTML",
+        reply_markup=get_back_to_start_keyboard()
+    )
+    return ConversationHandler.END
+
+
+async def prompt_force_sub_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ask admin to input channel usernames or IDs for force join."""
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    await query.answer()
+
+    chat_id = int(query.data.split(":")[1])
+    context.user_data["edit_forcesub_chat_id"] = chat_id
+
+    text = (
+        "✏️ <b>Set Force Join Channels</b>\n\n"
+        "Send the channel @usernames or chat IDs that users must join before being approved into this channel.\n\n"
+        "<b>Example formats:</b>\n"
+        "• Single channel:\n"
+        "  <code>@MyMainChannel</code>\n"
+        "• Multiple channels (comma-separated):\n"
+        "  <code>@Channel1, @Channel2, -1001234567890</code>\n"
+        "• Invite link:\n"
+        "  <code>https://t.me/MyChannel</code>\n\n"
+        "⚠️ <i>Make sure this bot is added as an <b>Administrator</b> in all required channels so it can verify memberships!</i>\n\n"
+        "<i>Send /cancel to abort.</i>"
+    )
+    await query.edit_message_text(text, parse_mode="HTML")
+    return WAITING_FORCESUB_CHANNELS
+
+
+async def save_force_sub_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save force join channels string for chat."""
+    chat_id = context.user_data.get("edit_forcesub_chat_id")
+    msg = update.message
+    if not chat_id or not msg or not msg.text:
+        return ConversationHandler.END
+
+    raw_channels = msg.text.strip()
+    await set_chat_force_sub_channels(chat_id, raw_channels)
+
+    success_text = (
+        f"✅ <b>Force Join Channels successfully saved for Chat ID <code>{chat_id}</code>!</b>\n\n"
+        f"Configured Channels:\n<code>{html.escape(raw_channels)}</code>\n\n"
+        f"Any new user requesting to join this channel will now be prompted to join these channels first!"
+    )
     await msg.reply_text(
         success_text,
         parse_mode="HTML",

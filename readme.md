@@ -63,13 +63,27 @@ An asynchronous, high-performance Telegram Bot built with `python-telegram-bot` 
    ```env
    BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ
    ADMIN_IDS=123456789
+
+   # Optional: MongoDB URI (if unset, SQLite will be used automatically)
+   MONGO_URI=mongodb+srv://<user>:<password>@cluster0.mongodb.net/?retryWrites=true&w=majority
+   DATABASE_NAME=telegram_auto_accept_bot
    ```
    > 💡 **Tip:** You can find your Telegram User ID using [@userinfobot](https://t.me/userinfobot) or [@raw_data_bot](https://t.me/raw_data_bot).
 
 ### 3. Run the Bot
 
+**Production Mode:**
 ```bash
 python main.py
+```
+
+**Development Mode (Auto-Restart / Hot Reload on code changes):**
+```bash
+# Using watchfiles (Python equivalent of npm run dev / nodemon)
+python -m watchfiles --filter python "python main.py" .
+
+# Or using nodemon (if you have Node.js installed)
+npx nodemon --exec python main.py -e py,env
 ```
 
 ---
@@ -191,7 +205,7 @@ Telegram Auto Accept Bot/
 ├── test_bot.py               # Unit tests
 ├── database/
 │   ├── __init__.py
-│   └── db.py                 # SQLite async queries & schema
+│   └── db.py                 # Dual database engine (MongoDB + SQLite fallback)
 ├── handlers/
 │   ├── __init__.py
 │   ├── join_request.py       # Live ChatJoinRequest approval & welcome DM logic

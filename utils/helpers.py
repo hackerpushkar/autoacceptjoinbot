@@ -29,6 +29,22 @@ def format_welcome_message(template: str, user: User, chat_title: str) -> str:
     return formatted
 
 
+def _clean_and_validate_url(raw_url: str) -> str:
+    """Validate and format button URL."""
+    raw_url = raw_url.strip().strip("{}").strip()
+    if not raw_url:
+        return "https://t.me"
+    if raw_url.startswith("@"):
+        return f"https://t.me/{raw_url[1:]}"
+    if raw_url.startswith("t.me/"):
+        return f"https://{raw_url}"
+    if raw_url.startswith(("http://", "https://", "tg://")):
+        return raw_url
+    if "." in raw_url and not raw_url.startswith("/"):
+        return f"https://{raw_url}"
+    return f"https://t.me/{raw_url}"
+
+
 def parse_buttons_and_clean_text(
     raw_text: str,
     user: User,
@@ -38,10 +54,12 @@ def parse_buttons_and_clean_text(
     Extracts custom inline buttons from the text and returns (cleaned_text, inline_keyboard).
     
     Supported button formats:
+    - [Button Text] - {https://link.com}
+    - [Button Text] - {channel_username}
     - [Button Text - https://link.com]
+    - [Button Text - @username]
     - [Button Text | https://link.com]
-    - [Button Text: https://link.com]
-    - [Btn 1 - https://link1.com][Btn 2 - https://link2.com]
+    - [Btn 1] - {link1} | [Btn 2] - {link2}
     - [Btn 1 - https://link1.com | Btn 2 - https://link2.com]
     """
     if not raw_text:
@@ -74,16 +92,42 @@ def parse_buttons_and_clean_text(
             cleaned_lines.append(line)
             continue
 
-        # Check if line contains button markers inside brackets
-        # Case 1: [Btn 1 - Link1][Btn 2 - Link2] or [Btn 1 - Link1] | [Btn 2 - Link2]
+        # Format 1: [Button Name] - {link/username} or [Btn 1] - {link1} | [Btn 2] - {link2}
+        pattern_outside = r"\[([^\]]+)\]\s*(?:[-|:]|->)?\s*\{([^}]+)\}"
+        matches_outside = re.findall(pattern_outside, stripped)
+        if matches_outside:
+            row: List[InlineKeyboardButton] = []
+            for btn_txt, btn_raw_url in matches_outside:
+                clean_url = _clean_and_validate_url(btn_raw_url)
+                clean_btn_text = btn_txt.strip()
+                for k, v in var_map.items():
+                    clean_btn_text = clean_btn_text.replace(k, v)
+                clean_btn_text = re.sub(r"<[^>]+>", "", clean_btn_text)
+                row.append(InlineKeyboardButton(text=clean_btn_text, url=clean_url))
+            if row:
+                keyboard_rows.append(row)
+                continue
+
+        # Format 2: [Button Name] - link or [Button Name] - @username
+        outside_plain = re.match(r"^\[([^\]]+)\]\s*(?:[-|:]|->)\s*(\S+)", stripped)
+        if outside_plain:
+            btn_txt = outside_plain.group(1).strip()
+            raw_url = outside_plain.group(2).strip()
+            clean_url = _clean_and_validate_url(raw_url)
+            clean_btn_text = btn_txt.strip()
+            for k, v in var_map.items():
+                clean_btn_text = clean_btn_text.replace(k, v)
+            clean_btn_text = re.sub(r"<[^>]+>", "", clean_btn_text)
+            keyboard_rows.append([InlineKeyboardButton(text=clean_btn_text, url=clean_url)])
+            continue
+
+        # Format 3: [Button Name - https://link] or [Btn 1 - link1 | Btn 2 - link2]
         bracket_blocks = re.findall(r"\[([^\[\]]+)\]", stripped)
         if bracket_blocks:
             row: List[InlineKeyboardButton] = []
             is_button_line = False
 
             for block in bracket_blocks:
-                # Inside a bracket block, check if there are pipe-separated sub-buttons: "Btn 1 - URL1 | Btn 2 - URL2"
-                # But careful: URL could have query params without spaces around pipe
                 sub_items = [block]
                 if " | " in block:
                     sub_items = block.split(" | ")
@@ -91,31 +135,23 @@ def parse_buttons_and_clean_text(
                     sub_items = block.split(" || ")
 
                 for item in sub_items:
-                    # Match "Button Text - URL" or "Button Text : URL" or "Button Text -> URL"
                     pair = re.split(r"\s+(?:[-|:]|->)\s+", item.strip(), maxsplit=1)
                     if len(pair) == 2:
-                        btn_text, btn_url = pair[0].strip(), pair[1].strip()
-                        # Check if URL looks like a URL / link
-                        if btn_url.startswith(("http://", "https://", "tg://", "t.me/")):
-                            is_button_line = True
-                            # Apply variable replacements to button text
-                            clean_btn_text = btn_text
-                            for k, v in var_map.items():
-                                clean_btn_text = clean_btn_text.replace(k, v)
-                            clean_btn_text = re.sub(r"<[^>]+>", "", clean_btn_text)
-
-                            clean_url = btn_url
-                            if clean_url.startswith("t.me/"):
-                                clean_url = "https://" + clean_url
-
-                            row.append(InlineKeyboardButton(text=clean_btn_text, url=clean_url))
+                        btn_text = pair[0].strip()
+                        raw_url = pair[1].strip()
+                        clean_url = _clean_and_validate_url(raw_url)
+                        is_button_line = True
+                        clean_btn_text = btn_text
+                        for k, v in var_map.items():
+                            clean_btn_text = clean_btn_text.replace(k, v)
+                        clean_btn_text = re.sub(r"<[^>]+>", "", clean_btn_text)
+                        row.append(InlineKeyboardButton(text=clean_btn_text, url=clean_url))
 
             if is_button_line and row:
                 keyboard_rows.append(row)
-            else:
-                cleaned_lines.append(line)
-        else:
-            cleaned_lines.append(line)
+                continue
+
+        cleaned_lines.append(line)
 
     cleaned_text = "\n".join(cleaned_lines).strip()
     for k, v in var_map.items():
@@ -133,4 +169,112 @@ def get_add_to_channel_url(bot_username: str) -> str:
 def get_add_to_group_url(bot_username: str) -> str:
     """Return link to add bot as admin in a group."""
     return f"https://t.me/{bot_username}?startgroup=true&admin=invite_users+manage_chat"
+
+
+async def send_safe_welcome_dm(
+    bot,
+    user_id: int,
+    text: str,
+    keyboard: Optional[InlineKeyboardMarkup] = None,
+    media_file_id: Optional[str] = None,
+    media_type: Optional[str] = None
+) -> bool:
+    """Send welcome DM safely with automatic media error and HTML parsing fallback."""
+    import telegram.error
+    from config import logger
+
+    if not text or not text.strip():
+        text = "👋 Welcome aboard! Your request has been approved. ✨"
+
+    # 1. Try sending with media (photo/video/animation) if configured
+    if media_file_id and media_type in ("photo", "video", "animation"):
+        try:
+            if media_type == "photo":
+                try:
+                    await bot.send_photo(
+                        chat_id=user_id,
+                        photo=media_file_id,
+                        caption=text,
+                        parse_mode="HTML",
+                        reply_markup=keyboard
+                    )
+                    return True
+                except telegram.error.BadRequest:
+                    await bot.send_photo(
+                        chat_id=user_id,
+                        photo=media_file_id,
+                        caption=text,
+                        reply_markup=keyboard
+                    )
+                    return True
+            elif media_type == "video":
+                try:
+                    await bot.send_video(
+                        chat_id=user_id,
+                        video=media_file_id,
+                        caption=text,
+                        parse_mode="HTML",
+                        reply_markup=keyboard
+                    )
+                    return True
+                except telegram.error.BadRequest:
+                    await bot.send_video(
+                        chat_id=user_id,
+                        video=media_file_id,
+                        caption=text,
+                        reply_markup=keyboard
+                    )
+                    return True
+            elif media_type == "animation":
+                try:
+                    await bot.send_animation(
+                        chat_id=user_id,
+                        animation=media_file_id,
+                        caption=text,
+                        parse_mode="HTML",
+                        reply_markup=keyboard
+                    )
+                    return True
+                except telegram.error.BadRequest:
+                    await bot.send_animation(
+                        chat_id=user_id,
+                        animation=media_file_id,
+                        caption=text,
+                        reply_markup=keyboard
+                    )
+                    return True
+        except telegram.error.Forbidden:
+            logger.debug(f"Could not send DM to user {user_id} (user hasn't started bot or blocked it).")
+            return False
+        except Exception as media_err:
+            logger.warning(f"Media sending failed ({media_err}), falling back to text message for user {user_id}")
+
+    # 2. Text message fallback (or primary if no media)
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=keyboard
+        )
+        return True
+    except telegram.error.BadRequest:
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=text,
+                disable_web_page_preview=True,
+                reply_markup=keyboard
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to send plain text welcome DM to {user_id}: {e}")
+            return False
+    except telegram.error.Forbidden:
+        logger.debug(f"Could not send DM to user {user_id} (user hasn't started bot or blocked it).")
+        return False
+    except Exception as e:
+        logger.warning(f"Failed to send welcome DM to {user_id}: {e}")
+        return False
 

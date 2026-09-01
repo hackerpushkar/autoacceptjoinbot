@@ -1,3 +1,5 @@
+import os
+import html
 import telegram.error
 from telegram import Update, ChatMember
 from telegram.ext import ContextTypes
@@ -6,9 +8,12 @@ from database.db import (
     add_or_update_user,
     add_or_update_chat,
     get_chat,
-    log_join_request
+    log_join_request,
+    add_delayed_approval
 )
-from utils.helpers import format_welcome_message
+from utils.helpers import parse_buttons_and_clean_text, format_welcome_message, send_safe_welcome_dm
+from utils.force_sub import check_channel_membership
+from keyboards.inline import get_channel_force_join_request_keyboard
 
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -36,6 +41,65 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.info(f"Auto-accept is disabled for chat {chat.id}. Skipping approval.")
         return
 
+    # 2.5 Check per-chat force join requirement
+    force_sub_enabled = chat_data.get("force_sub_enabled", 0) if chat_data else 0
+    force_sub_channels = chat_data.get("force_sub_channels") if chat_data else None
+
+    if force_sub_enabled == 1 and force_sub_channels:
+        channel_list = [c.strip() for c in force_sub_channels.split(",") if c.strip()]
+        unsubscribed = []
+        for raw_ch in channel_list:
+            is_m, title, link = await check_channel_membership(context.bot, user.id, raw_ch)
+            if not is_m:
+                unsubscribed.append({
+                    "channel": raw_ch,
+                    "title": title,
+                    "url": link if link else "https://t.me/"
+                })
+
+        if unsubscribed:
+            logger.info(f"User {user.id} has not joined {len(unsubscribed)} required channels for chat {chat.id}. Sending force join DM.")
+            chat_name = chat.title or "our channel"
+            force_text = (
+                f"⚠️ <b>Action Required to Join {html.escape(chat_name)}!</b>\n\n"
+                f"To be accepted into <b>{html.escape(chat_name)}</b>, you must first join our partner channel(s) below:\n\n"
+                f"👉 <i>Please join all channels below and tap <b>'🔄 Verify & Join'</b> to get approved automatically!</i>"
+            )
+            force_keyboard = get_channel_force_join_request_keyboard(chat.id, unsubscribed, bot_username=context.bot.username)
+            has_custom_media = bool(chat_data and chat_data.get("custom_welcome_media"))
+            banner_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "force_join_banner.png")
+
+            try:
+                if has_custom_media and os.path.exists(banner_path):
+                    with open(banner_path, "rb") as banner_file:
+                        await context.bot.send_photo(
+                            chat_id=user.id,
+                            photo=banner_file,
+                            caption=force_text,
+                            parse_mode="HTML",
+                            reply_markup=force_keyboard
+                        )
+                else:
+                    await context.bot.send_message(
+                        chat_id=user.id,
+                        text=force_text,
+                        parse_mode="HTML",
+                        reply_markup=force_keyboard
+                    )
+                logger.info(f"Sent force join DM (with_banner={has_custom_media}) to user {user.id} for chat {chat.id}")
+            except telegram.error.Forbidden:
+                logger.debug(f"Could not deliver force join DM to {user.id} (user has not started bot).")
+            except Exception as e:
+                logger.warning(f"Error sending force join DM to {user.id}: {e}")
+
+            # If Send Only mode is active, schedule delayed auto-approval
+            if chat_data and chat_data.get("send_only_enabled") == 1:
+                delay_sec = chat_data.get("send_only_delay", 86400)
+                await add_delayed_approval(chat_id=chat.id, user_id=user.id, delay_seconds=delay_sec)
+                logger.info(f"Scheduled Send Only delayed approval for user {user.id} in chat {chat.id} in {delay_sec}s")
+
+            return
+
     # 3. Approve join request
     try:
         await context.bot.approve_chat_join_request(chat_id=chat.id, user_id=user.id)
@@ -60,44 +124,18 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             chat_title=chat.title or "our community"
         )
 
-        try:
-            if media_file_id and media_type == "photo":
-                await context.bot.send_photo(
-                    chat_id=user.id,
-                    photo=media_file_id,
-                    caption=welcome_text,
-                    parse_mode="HTML",
-                    reply_markup=welcome_keyboard
-                )
-            elif media_file_id and media_type == "video":
-                await context.bot.send_video(
-                    chat_id=user.id,
-                    video=media_file_id,
-                    caption=welcome_text,
-                    parse_mode="HTML",
-                    reply_markup=welcome_keyboard
-                )
-            elif media_file_id and media_type == "animation":
-                await context.bot.send_animation(
-                    chat_id=user.id,
-                    animation=media_file_id,
-                    caption=welcome_text,
-                    parse_mode="HTML",
-                    reply_markup=welcome_keyboard
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=user.id,
-                    text=welcome_text,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                    reply_markup=welcome_keyboard
-                )
+        sent = await send_safe_welcome_dm(
+            bot=context.bot,
+            user_id=user.id,
+            text=welcome_text,
+            keyboard=welcome_keyboard,
+            media_file_id=media_file_id,
+            media_type=media_type
+        )
+        if sent:
             logger.info(f"Sent welcome DM (with buttons/media) to user {user.id}")
-        except telegram.error.Forbidden:
-            logger.debug(f"Could not send DM to {user.id} (user has not started bot or blocked it).")
-        except telegram.error.TelegramError as e:
-            logger.warning(f"Failed to send welcome DM to {user.id}: {e}")
+        else:
+            logger.debug(f"Could not deliver welcome DM to user {user.id} (user may not have started bot).")
 
 
 async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):

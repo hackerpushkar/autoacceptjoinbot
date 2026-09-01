@@ -13,6 +13,7 @@ from telegram.ext import (
 )
 from config import BOT_TOKEN, logger
 from database.db import init_db
+from services.delayed_approvals import start_delayed_approvals_worker
 from handlers.join_request import handle_join_request, handle_my_chat_member
 from handlers.user import (
     start_command,
@@ -27,12 +28,15 @@ from handlers.admin import (
     admin_callback_handler,
     prompt_custom_welcome,
     save_custom_welcome,
+    prompt_force_sub_channels,
+    save_force_sub_channels,
     prompt_broadcast,
     preview_broadcast,
     execute_broadcast,
     cancel_conversation,
     WAITING_WELCOME_MSG,
-    WAITING_BROADCAST_MSG
+    WAITING_BROADCAST_MSG,
+    WAITING_FORCESUB_CHANNELS
 )
 
 
@@ -41,7 +45,10 @@ async def post_init(application):
     # 1. Initialize SQLite database
     await init_db()
 
-    # 2. Register Bot Commands in Telegram UI
+    # 2. Start Delayed Approvals Background Worker
+    start_delayed_approvals_worker(application.bot, interval_seconds=30)
+
+    # 3. Register Bot Commands in Telegram UI
     commands = [
         BotCommand("start", "Start the bot & open main menu"),
         BotCommand("help", "Setup instructions & tutorials"),
@@ -104,6 +111,22 @@ def main():
     )
     app.add_handler(welcome_conv_handler)
 
+    # Custom Force Join Channels Conversation
+    forcesub_conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(prompt_force_sub_channels, pattern=r"^chat_edit_forcesub:")],
+        states={
+            WAITING_FORCESUB_CHANNELS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_force_sub_channels)
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversation),
+            CallbackQueryHandler(cancel_conversation, pattern="^cancel_conv$")
+        ],
+        per_chat=True
+    )
+    app.add_handler(forcesub_conv_handler)
+
     # Broadcast Conversation
     broadcast_conv_handler = ConversationHandler(
         entry_points=[
@@ -136,11 +159,11 @@ def main():
     app.add_handler(CommandHandler("channels", channels_command))
 
     # 4. User and Admin Callback Query Handlers
-    user_patterns = r"^(nav_start|nav_help|nav_about|help_step_admin|help_step_link|help_step_dm|help_step_faq|verify_force_sub)$"
+    user_patterns = r"^(nav_start|nav_help|nav_about|about_more_info|info_developer|info_admin|info_gift|help_step_admin|help_step_link|help_step_dm|help_step_faq|verify_force_sub|verify_chat_join:|test_autostart:)"
     app.add_handler(CallbackQueryHandler(user_callback_handler, pattern=user_patterns))
 
 
-    admin_patterns = r"^(nav_admin_panel|admin_stats|nav_channels|channels_page:|chat_detail:|chat_welcome_menu:|chat_toggle_auto:|chat_toggle_welcome:|chat_preview_welcome:|chat_reset_welcome:|chat_prompt_pending:|chat_exec_pending:)"
+    admin_patterns = r"^(nav_admin_panel|admin_stats|nav_channels|channels_page:|chat_detail:|chat_welcome_menu:|chat_toggle_auto:|chat_toggle_welcome:|chat_preview_welcome:|chat_reset_welcome:|chat_forcesub_menu:|chat_toggle_forcesub:|chat_reset_forcesub:|chat_sendonly_menu:|chat_toggle_sendonly:|chat_set_sendonly_delay:|chat_prompt_pending:|chat_exec_pending:)"
     app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern=admin_patterns))
 
     # Start polling
