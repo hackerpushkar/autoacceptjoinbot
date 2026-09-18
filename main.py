@@ -163,7 +163,7 @@ def main():
     app.add_handler(CallbackQueryHandler(user_callback_handler, pattern=user_patterns))
 
 
-    admin_patterns = r"^(nav_admin_panel|admin_stats|nav_channels|channels_page:|chat_detail:|chat_welcome_menu:|chat_toggle_auto:|chat_toggle_welcome:|chat_preview_welcome:|chat_reset_welcome:|chat_forcesub_menu:|chat_toggle_forcesub:|chat_reset_forcesub:|chat_sendonly_menu:|chat_toggle_sendonly:|chat_set_sendonly_delay:|chat_prompt_pending:|chat_exec_pending:)"
+    admin_patterns = r"^(nav_admin_panel|admin_stats|admin_all_channels|nav_channels|channels_page:|chat_detail:|chat_welcome_menu:|chat_toggle_auto:|chat_toggle_welcome:|chat_preview_welcome:|chat_reset_welcome:|chat_forcesub_menu:|chat_toggle_forcesub:|chat_reset_forcesub:|chat_sendonly_menu:|chat_toggle_sendonly:|chat_set_sendonly_delay:|chat_prompt_pending:|chat_exec_pending:)"
     app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern=admin_patterns))
 
     # Start polling

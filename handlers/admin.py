@@ -35,9 +35,10 @@ from keyboards.inline import (
     get_approve_pending_confirm_keyboard,
     get_broadcast_confirm_keyboard,
     get_back_to_start_keyboard,
+    get_empty_channels_keyboard,
     get_stats_keyboard
 )
-from utils.helpers import parse_buttons_and_clean_text
+from utils.helpers import parse_buttons_and_clean_text, can_user_manage_chat, get_user_manageable_chats
 from services.backlog_cleaner import (
     is_backlog_engine_available,
     get_pending_requests_count,
@@ -102,23 +103,33 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 
-async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /channels command or callback."""
+async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE, is_superadmin_view: bool = False):
+    """Handle /channels command or callback, showing only channels the user manages."""
     user = update.effective_user
     if not user:
         return
 
-    chats = await get_all_chats()
+    chats = await get_user_manageable_chats(context.bot, user.id, is_superadmin_view=is_superadmin_view)
+    bot_username = context.bot.username or "Bot"
     if not chats:
-        text = (
-            "📋 <b>Monitored Channels & Groups</b>\n\n"
-            "No channels or groups have been connected yet.\n\n"
-            "👉 <i>Add the bot as an Administrator in your Channel/Group to get started!</i>"
-        )
-        keyboard = get_back_to_start_keyboard()
+        if is_superadmin_view:
+            text = (
+                "📋 <b>All Monitored Channels & Groups (Admin View)</b>\n\n"
+                "No channels or groups have been connected to the bot yet.\n\n"
+                "👉 <i>Add the bot as an Administrator in a Channel/Group to get started!</i>"
+            )
+            keyboard = get_back_to_start_keyboard()
+        else:
+            text = (
+                "📋 <b>Your Channels & Groups</b>\n\n"
+                "You haven't connected any channels or groups yet.\n\n"
+                "👉 <i>To get started, add this bot as an <b>Administrator</b> with invite permissions in your Channel or Group!</i>"
+            )
+            keyboard = get_empty_channels_keyboard(bot_username)
     else:
+        title_header = "All Monitored Channels & Groups (Admin View)" if is_superadmin_view else "Your Channels & Groups"
         text = (
-            f"📋 <b>Monitored Channels & Groups</b> ({len(chats)} total)\n\n"
+            f"📋 <b>{title_header}</b> ({len(chats)} total)\n\n"
             "🟢 = Auto-Accept ON | 🔴 = Auto-Accept OFF\n"
             "Select a chat below to configure its settings:"
         )
@@ -286,20 +297,46 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     elif data == "nav_channels":
         await query.answer()
-        await channels_command(update, context)
+        await channels_command(update, context, is_superadmin_view=False)
+
+    elif data == "admin_all_channels":
+        await query.answer()
+        if not user or not is_admin(user.id):
+            await query.answer("Access Denied: Superadmin only.", show_alert=True)
+            return
+        await channels_command(update, context, is_superadmin_view=True)
 
     elif data.startswith("channels_page:"):
         await query.answer()
         page = int(data.split(":")[1])
-        chats = await get_all_chats()
-        text = (
-            f"📋 <b>Monitored Channels & Groups</b> ({len(chats)} total)\n\n"
-            "🟢 = Auto-Accept ON | 🔴 = Auto-Accept OFF\n"
-            "Select a chat below to configure its settings:"
-        )
+        chats = await get_user_manageable_chats(context.bot, user.id, is_superadmin_view=False)
+        bot_username = context.bot.username or "Bot"
+        if not chats:
+            text = (
+                "📋 <b>Your Channels & Groups</b>\n\n"
+                "You haven't connected any channels or groups yet."
+            )
+            keyboard = get_empty_channels_keyboard(bot_username)
+        else:
+            text = (
+                f"📋 <b>Your Channels & Groups</b> ({len(chats)} total)\n\n"
+                "🟢 = Auto-Accept ON | 🔴 = Auto-Accept OFF\n"
+                "Select a chat below to configure its settings:"
+            )
+            keyboard = get_channels_keyboard(chats, page=page)
         try:
-            await query.edit_message_text(text, reply_markup=get_channels_keyboard(chats, page=page), parse_mode="HTML")
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         except telegram.error.BadRequest:
+            pass
+
+    # Permission Guard for all chat configuration callbacks
+    if data.startswith("chat_"):
+        try:
+            target_chat_id = int(data.split(":")[1])
+            if not user or not await can_user_manage_chat(context.bot, target_chat_id, user.id):
+                await query.answer("⛔ Access Denied: You do not have permission to manage this channel.", show_alert=True)
+                return
+        except (ValueError, IndexError):
             pass
 
     elif data.startswith("chat_detail:"):
@@ -617,6 +654,11 @@ async def prompt_custom_welcome(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
 
     chat_id = int(query.data.split(":")[1])
+    user = update.effective_user
+    if not user or not await can_user_manage_chat(context.bot, chat_id, user.id):
+        await query.answer("⛔ Access Denied: You do not have permission to manage this channel.", show_alert=True)
+        return ConversationHandler.END
+
     context.user_data["edit_chat_id"] = chat_id
 
     text = (
@@ -700,6 +742,11 @@ async def prompt_force_sub_channels(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
 
     chat_id = int(query.data.split(":")[1])
+    user = update.effective_user
+    if not user or not await can_user_manage_chat(context.bot, chat_id, user.id):
+        await query.answer("⛔ Access Denied: You do not have permission to manage this channel.", show_alert=True)
+        return ConversationHandler.END
+
     context.user_data["edit_forcesub_chat_id"] = chat_id
 
     text = (

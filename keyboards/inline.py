@@ -66,6 +66,20 @@ def get_back_to_start_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def get_empty_channels_keyboard(bot_username: str) -> InlineKeyboardMarkup:
+    """Keyboard shown when a user has no connected channels."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("➕ Add to Channel", url=get_add_to_channel_url(bot_username)),
+            InlineKeyboardButton("➕ Add to Group", url=get_add_to_group_url(bot_username))
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh List", callback_data="nav_channels"),
+            InlineKeyboardButton("🏠 Main Menu", callback_data="nav_start")
+        ]
+    ])
+
+
 def get_about_keyboard(bot_username: str) -> InlineKeyboardMarkup:
     """About menu keyboard with copy button and More Info action."""
     buttons = [
@@ -153,10 +167,11 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast_prompt")
         ],
         [
-            InlineKeyboardButton("📋 Monitored Channels & Groups", callback_data="nav_channels")
+            InlineKeyboardButton("📋 All Channels (System-Wide)", callback_data="admin_all_channels")
         ],
         [
-            InlineKeyboardButton("🏠 Back to Main Menu", callback_data="nav_start")
+            InlineKeyboardButton("📊 My Channels", callback_data="nav_channels"),
+            InlineKeyboardButton("🏠 Main Menu", callback_data="nav_start")
         ]
     ]
     return InlineKeyboardMarkup(buttons)

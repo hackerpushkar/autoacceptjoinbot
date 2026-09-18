@@ -28,14 +28,19 @@ from database.db import (
     get_due_delayed_approvals,
     mark_delayed_approval_completed,
     log_join_request,
-    get_analytics
+    get_analytics,
+    get_chats_by_owner,
+    set_chat_owner,
+    delete_chat
 )
 from utils.helpers import (
     format_welcome_message,
     parse_buttons_and_clean_text,
     get_add_to_channel_url,
     get_add_to_group_url,
-    send_safe_welcome_dm
+    send_safe_welcome_dm,
+    can_user_manage_chat,
+    get_user_manageable_chats
 )
 from handlers.user import start_command, send_channel_welcome_for_user
 from keyboards.inline import (
@@ -522,6 +527,61 @@ class TestBotComponents(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent["chat_id"], 777888)
         self.assertIn("Welcome DeepLink Tester to VIP Alpha Channel!", sent["text"])
         self.assertIsNotNone(sent["reply_markup"])
+
+    async def test_multi_user_chat_isolation(self):
+        user_a = 111222
+        user_b = 333444
+        chat_a = -1001111111
+        chat_b = -1002222222
+
+        # 1. Register chats with different owners
+        await add_or_update_chat(chat_a, "User A Channel", "channel", owner_id=user_a)
+        await add_or_update_chat(chat_b, "User B Channel", "channel", owner_id=user_b)
+
+        # 2. Verify User A only sees chat_a
+        chats_a = await get_chats_by_owner(user_a)
+        chat_ids_a = [c["chat_id"] for c in chats_a]
+        self.assertIn(chat_a, chat_ids_a)
+        self.assertNotIn(chat_b, chat_ids_a)
+
+        # 3. Verify User B only sees chat_b
+        chats_b = await get_chats_by_owner(user_b)
+        chat_ids_b = [c["chat_id"] for c in chats_b]
+        self.assertIn(chat_b, chat_ids_b)
+        self.assertNotIn(chat_a, chat_ids_b)
+
+        # 4. Verify User C (no chats) gets empty list
+        chats_c = await get_chats_by_owner(999999)
+        self.assertEqual(len(chats_c), 0)
+
+    async def test_can_user_manage_chat(self):
+        owner_id = 555666
+        other_user_id = 777888
+        superadmin_id = 999888777  # configured in os.environ["ADMIN_IDS"]
+        chat_id = -100999111
+
+        await add_or_update_chat(chat_id, "Permission Test Chat", "channel", owner_id=owner_id)
+
+        class MockBot:
+            async def get_chat_member(self, chat_id, user_id):
+                return SimpleNamespace(status="member")
+
+        bot = MockBot()
+
+        # Owner has permission
+        self.assertTrue(await can_user_manage_chat(bot, chat_id, owner_id))
+        # Non-owner regular user is denied
+        self.assertFalse(await can_user_manage_chat(bot, chat_id, other_user_id))
+        # Superadmin is always allowed
+        self.assertTrue(await can_user_manage_chat(bot, chat_id, superadmin_id))
+
+    async def test_delete_chat(self):
+        chat_id = -100777333
+        await add_or_update_chat(chat_id, "Temporary Chat", "channel", owner_id=123)
+        self.assertIsNotNone(await get_chat(chat_id))
+
+        await delete_chat(chat_id)
+        self.assertIsNone(await get_chat(chat_id))
 
 
 if __name__ == "__main__":

@@ -1,12 +1,13 @@
 import os
 import html
 import telegram.error
-from telegram import Update, ChatMember
+from telegram import Update, ChatMember, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from config import logger, DEFAULT_WELCOME_MESSAGE
 from database.db import (
     add_or_update_user,
     add_or_update_chat,
+    delete_chat,
     get_chat,
     log_join_request,
     add_delayed_approval
@@ -148,7 +149,28 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     new_status = chat_member.new_chat_member.status
 
     if new_status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
-        logger.info(f"Bot was added/promoted as admin in {chat.type} '{chat.title}' ({chat.id})")
-        await add_or_update_chat(chat.id, chat.title or "Untitled Chat", chat.type)
+        owner_user = chat_member.from_user
+        owner_id = owner_user.id if owner_user else None
+        logger.info(f"Bot was added/promoted as admin in {chat.type} '{chat.title}' ({chat.id}) by user {owner_id}")
+        await add_or_update_chat(chat.id, chat.title or "Untitled Chat", chat.type, owner_id=owner_id)
+
+        if owner_user:
+            await add_or_update_user(owner_user.id, owner_user.username, owner_user.first_name, owner_user.last_name)
+            try:
+                msg = (
+                    f"🎉 <b>Bot Connected Successfully!</b>\n\n"
+                    f"I am now active in: <b>{html.escape(chat.title or 'your chat')}</b>\n"
+                    f"Auto-accept is <b>Enabled 🟢</b> by default.\n\n"
+                    f"You can configure settings, welcome messages, and force join anytime by clicking below:"
+                )
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⚙️ Configure Chat", callback_data=f"chat_detail:{chat.id}")],
+                    [InlineKeyboardButton("📊 My Channels", callback_data="nav_channels")]
+                ])
+                await context.bot.send_message(chat_id=owner_user.id, text=msg, parse_mode="HTML", reply_markup=kb)
+            except Exception as e:
+                logger.debug(f"Could not send DM to chat owner {owner_user.id}: {e}")
+
     elif new_status in [ChatMember.LEFT, ChatMember.BANNED]:
         logger.info(f"Bot was removed from {chat.type} '{chat.title}' ({chat.id})")
+        await delete_chat(chat.id)

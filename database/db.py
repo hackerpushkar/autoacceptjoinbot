@@ -56,6 +56,7 @@ async def init_db():
                 chat_id INTEGER PRIMARY KEY,
                 title TEXT,
                 chat_type TEXT,
+                owner_id INTEGER,
                 auto_accept INTEGER DEFAULT 1,
                 welcome_enabled INTEGER DEFAULT 1,
                 custom_welcome_message TEXT,
@@ -66,6 +67,11 @@ async def init_db():
         """)
 
         # Perform seamless column migrations for existing databases
+        try:
+            await db.execute("ALTER TABLE chats ADD COLUMN owner_id INTEGER")
+        except Exception:
+            pass
+
         try:
             await db.execute("ALTER TABLE chats ADD COLUMN custom_welcome_media TEXT")
         except Exception:
@@ -208,6 +214,7 @@ def _format_mongo_chat(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "chat_id": doc.get("chat_id", doc.get("_id")),
         "title": doc.get("title", ""),
         "chat_type": doc.get("chat_type", "channel"),
+        "owner_id": doc.get("owner_id"),
         "auto_accept": doc.get("auto_accept", 1),
         "welcome_enabled": doc.get("welcome_enabled", 1),
         "custom_welcome_message": doc.get("custom_welcome_message"),
@@ -221,20 +228,25 @@ def _format_mongo_chat(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     }
 
 
-async def add_or_update_chat(chat_id: int, title: str, chat_type: str):
-    """Register or update channel/group details."""
+async def add_or_update_chat(chat_id: int, title: str, chat_type: str, owner_id: Optional[int] = None):
+    """Register or update channel/group details with optional owner_id."""
     if is_mongodb_enabled():
         db = get_mongo_db()
         now = datetime.datetime.now(datetime.timezone.utc)
+        update_fields: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "title": title,
+            "chat_type": chat_type
+        }
+        if owner_id is not None:
+            update_fields["owner_id"] = owner_id
+
         await db.chats.update_one(
             {"_id": chat_id},
             {
-                "$set": {
-                    "chat_id": chat_id,
-                    "title": title,
-                    "chat_type": chat_type
-                },
+                "$set": update_fields,
                 "$setOnInsert": {
+                    "owner_id": owner_id,
                     "auto_accept": 1,
                     "welcome_enabled": 1,
                     "custom_welcome_message": None,
@@ -252,13 +264,97 @@ async def add_or_update_chat(chat_id: int, title: str, chat_type: str):
         return
 
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("""
-            INSERT INTO chats (chat_id, title, chat_type)
-            VALUES (?, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                title = excluded.title,
-                chat_type = excluded.chat_type
-        """, (chat_id, title, chat_type))
+        if owner_id is not None:
+            await db.execute("""
+                INSERT INTO chats (chat_id, title, chat_type, owner_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    title = excluded.title,
+                    chat_type = excluded.chat_type,
+                    owner_id = excluded.owner_id
+            """, (chat_id, title, chat_type, owner_id))
+        else:
+            await db.execute("""
+                INSERT INTO chats (chat_id, title, chat_type)
+                VALUES (?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    title = excluded.title,
+                    chat_type = excluded.chat_type
+            """, (chat_id, title, chat_type))
+        await db.commit()
+
+
+async def set_chat_owner(chat_id: int, owner_id: int):
+    """Assign or transfer ownership of a chat to a user."""
+    if is_mongodb_enabled():
+        db = get_mongo_db()
+        await db.chats.update_one(
+            {"_id": chat_id},
+            {"$set": {"owner_id": owner_id}}
+        )
+        return
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("UPDATE chats SET owner_id = ? WHERE chat_id = ?", (owner_id, chat_id))
+        await db.commit()
+
+
+async def get_chats_by_owner(owner_id: int) -> List[Dict[str, Any]]:
+    """Retrieve all chats owned by a specific user."""
+    if is_mongodb_enabled():
+        db = get_mongo_db()
+        cursor = db.chats.find({"owner_id": owner_id}).sort("added_at", -1)
+        chats = []
+        async for doc in cursor:
+            formatted = _format_mongo_chat(doc)
+            if formatted:
+                chats.append(formatted)
+        return chats
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM chats WHERE owner_id = ? ORDER BY added_at DESC",
+            (owner_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def get_unassigned_chats() -> List[Dict[str, Any]]:
+    """Retrieve chats with no owner assigned yet (e.g. legacy chats)."""
+    if is_mongodb_enabled():
+        db = get_mongo_db()
+        cursor = db.chats.find({
+            "$or": [{"owner_id": None}, {"owner_id": {"$exists": False}}]
+        }).sort("added_at", -1)
+        chats = []
+        async for doc in cursor:
+            formatted = _format_mongo_chat(doc)
+            if formatted:
+                chats.append(formatted)
+        return chats
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM chats WHERE owner_id IS NULL ORDER BY added_at DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def delete_chat(chat_id: int):
+    """Delete a chat and its pending approvals (e.g. when bot is removed)."""
+    if is_mongodb_enabled():
+        db = get_mongo_db()
+        await db.chats.delete_one({"_id": chat_id})
+        await db.delayed_approvals.delete_many({"chat_id": chat_id})
+        return
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))
+        await db.execute("DELETE FROM delayed_approvals WHERE chat_id = ?", (chat_id,))
         await db.commit()
 
 

@@ -278,3 +278,86 @@ async def send_safe_welcome_dm(
         logger.warning(f"Failed to send welcome DM to {user_id}: {e}")
         return False
 
+
+async def can_user_manage_chat(bot, chat_id: int, user_id: int) -> bool:
+    """
+    Check if a user is authorized to manage a specific chat.
+    Allowed if:
+    1. The user is a configured bot superadmin (is_admin(user_id)).
+    2. The chat's owner_id in the database matches user_id.
+    3. The chat is unassigned or legacy, and Telegram confirms the user is creator/admin.
+       In this case, ownership is auto-linked in the database.
+    """
+    from config import is_admin
+    from database.db import get_chat, set_chat_owner
+
+    if is_admin(user_id):
+        return True
+
+    chat_data = await get_chat(chat_id)
+    if not chat_data:
+        return False
+
+    # Direct match in database
+    if chat_data.get("owner_id") == user_id:
+        return True
+
+    # If owner_id is set to another user, check if this user is a Telegram chat admin/creator
+    if chat_data.get("owner_id") is not None and chat_data.get("owner_id") != user_id:
+        try:
+            member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+            if member.status in ["creator", "administrator"]:
+                return True
+        except Exception:
+            pass
+        return False
+
+    # If owner_id is None (unassigned / legacy chat)
+    try:
+        member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+        if member.status in ["creator", "administrator"]:
+            await set_chat_owner(chat_id, user_id)
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+async def get_user_manageable_chats(bot, user_id: int, is_superadmin_view: bool = False) -> List[Dict[str, Any]]:
+    """
+    Retrieve chats that the given user owns or manages.
+    If is_superadmin_view is True, returns all chats in the database.
+    Otherwise:
+    - Returns all chats where owner_id == user_id.
+    - For any unassigned chats (owner_id IS NULL), checks if user is admin in Telegram.
+      If so, claims them and includes them in the list.
+    """
+    from database.db import get_all_chats, get_chats_by_owner, get_unassigned_chats, set_chat_owner
+
+    if is_superadmin_view:
+        return await get_all_chats()
+
+    # 1. Fetch chats assigned to this user
+    user_chats = await get_chats_by_owner(user_id)
+    existing_chat_ids = {c["chat_id"] for c in user_chats}
+
+    # 2. Check unassigned chats to see if this user is their admin/creator
+    unassigned = await get_unassigned_chats()
+    for chat in unassigned:
+        chat_id = chat["chat_id"]
+        if chat_id in existing_chat_ids:
+            continue
+        try:
+            member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+            if member.status in ["creator", "administrator"]:
+                await set_chat_owner(chat_id, user_id)
+                chat["owner_id"] = user_id
+                user_chats.append(chat)
+                existing_chat_ids.add(chat_id)
+        except Exception:
+            pass
+
+    return user_chats
+
+
