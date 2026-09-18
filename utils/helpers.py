@@ -1,6 +1,7 @@
+from __future__ import annotations
 import html
 import re
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Any
 from telegram import User, InlineKeyboardButton, InlineKeyboardMarkup
 
 
