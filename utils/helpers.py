@@ -300,11 +300,12 @@ async def can_user_manage_chat(bot, chat_id: int, user_id: int) -> bool:
         return False
 
     # Direct match in database
-    if chat_data.get("owner_id") == user_id:
+    owner_id = chat_data.get("owner_id")
+    if owner_id is not None and str(owner_id) == str(user_id):
         return True
 
     # If owner_id is set to another user, check if this user is a Telegram chat admin/creator
-    if chat_data.get("owner_id") is not None and chat_data.get("owner_id") != user_id:
+    if owner_id is not None and str(owner_id) != str(user_id):
         try:
             member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
             if member.status in ["creator", "administrator"]:

@@ -339,7 +339,7 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         except (ValueError, IndexError):
             pass
 
-    elif data.startswith("chat_detail:"):
+    if data.startswith("chat_detail:"):
         await query.answer()
         chat_id = int(data.split(":")[1])
         chat_data = await get_chat(chat_id)

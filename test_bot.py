@@ -43,6 +43,7 @@ from utils.helpers import (
     get_user_manageable_chats
 )
 from handlers.user import start_command, send_channel_welcome_for_user
+from handlers.admin import admin_callback_handler
 from keyboards.inline import (
     get_start_keyboard,
     get_channels_keyboard,
@@ -582,6 +583,38 @@ class TestBotComponents(unittest.IsolatedAsyncioTestCase):
 
         await delete_chat(chat_id)
         self.assertIsNone(await get_chat(chat_id))
+
+    async def test_chat_detail_callback_response(self):
+        chat_id = -100888111
+        user_id = 999111
+        await add_or_update_chat(chat_id, "Demo Channel", "channel", owner_id=user_id)
+
+        answered = []
+        edited_messages = []
+
+        class MockQuery:
+            data = f"chat_detail:{chat_id}"
+            from_user = SimpleNamespace(id=user_id, username="demo_owner")
+
+            async def answer(self, text=None, show_alert=False):
+                answered.append({"text": text, "show_alert": show_alert})
+
+            async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
+                edited_messages.append({"text": text, "reply_markup": reply_markup})
+
+        class MockBot:
+            async def get_chat_member(self, cid, uid):
+                return SimpleNamespace(status="creator")
+
+        update = SimpleNamespace(callback_query=MockQuery(), effective_user=MockQuery.from_user)
+        context = SimpleNamespace(bot=MockBot())
+
+        await admin_callback_handler(update, context)
+
+        # Verify the query was answered and the message was edited with Settings for Demo Channel
+        self.assertTrue(len(answered) > 0)
+        self.assertEqual(len(edited_messages), 1)
+        self.assertIn("Settings for:</b> Demo Channel", edited_messages[0]["text"])
 
 
 if __name__ == "__main__":
